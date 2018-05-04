@@ -8,12 +8,13 @@ if (!defined('_PS_VERSION_'))
 class Ps_CommerceMLLoader extends Module
 {
     private static $session_name = "CommerceMLLoader";
+    private static $upload1c = '/_upload/';
 
     public function __construct()
     {
         $this->name = 'ps_commercemlloader';
         $this->tab = 'others';
-        $this->version = '0.0.1';
+        $this->version = '0.0.2';
         $this->author = 'Vitaly Kondratiev';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = array('min' => '1.7', 'max' => _PS_VERSION_);
@@ -214,24 +215,24 @@ class Ps_CommerceMLLoader extends Module
                 }
                 break;
             case 'init': // Initialize query
-                if (!is_dir($upload_path)){
-                    mkdir($upload_path, 0777, true);
+                if (!is_dir($upload_path . self::$upload1c)){
+                    mkdir($upload_path . self::$upload1c, 0777, true);
                 }
-                /*else {
-                    self::cleanup_import_directory($upload_path);
-                }*/
+                else {
+                    self::cleanup_import_directory($upload_path . self::$upload1c);
+                }
                 $response = "zip=" . ((intval(Configuration::get('exchange_zip')) == 1) ? 'yes' : 'no');
-                $response .= "\nfile_limit=".self::‌‌parse_size(ini_get("upload_max_filesize"));
+                $response .= "\nfile_limit=".self::parse_size(ini_get("upload_max_filesize"));
                 $response .= "\n" . self::sessid_get();
                 $response .= "\nversion=2.08";
                 break;
             case 'file': // Upload files from 1C
-                $filepath = $upload_path . $_GET['filename'];
+                $filepath = $upload_path . self::$upload1c . $_GET['filename'];
                 $data = file_get_contents("php://input");
                 $data_length = $_SERVER['CONTENT_LENGTH'];
                 if (isset($data) && $data !== false) {
                     if (dirname($_GET['filename']) != '.') {
-                        mkdir($upload_path . '/' . dirname($_GET['filename']), 0777, true);
+                        mkdir($upload_path . self::$upload1c . '/' . dirname($_GET['filename']), 0777, true);
                     }
                     $file = fopen($filepath, "w+");
                     if ($file) {
@@ -240,7 +241,7 @@ class Ps_CommerceMLLoader extends Module
                             if (mime_content_type($filepath) == 'application/zip') {
                                 $zip = new ZipArchive();
                                 $zip->open($filepath);
-                                $zip->extractTo($upload_path);
+                                $zip->extractTo($upload_path . self::$upload1c);
                                 $zip->close();
                             }
                             $response = "success";
@@ -250,12 +251,51 @@ class Ps_CommerceMLLoader extends Module
                 }
                 break;
             case 'import': // Processing data
-                if (file_exists($upload_path.$_GET['filename'])){
+                if (file_exists($upload_path.'completed.lock')) {
+                    unlink($upload_path.'completed.lock');
+                }
+                if (file_exists($upload_path . self::$upload1c . $_GET['filename'])){
+                    $move_path = '/';
+                    if (preg_match('/^import(.*)\.xml$/', $_GET['filename'])){
+                        $import_xml = simplexml_load_file($upload_path . self::$upload1c .$_GET['filename']);
+                        if (isset($import_xml->Классификатор->Группы)){
+                            $move_path = '/';
+                        }
+                        elseif (isset($import_xml->Каталог->Товары)) {
+                            $move_path = '/goods/';
+                        }
+                        elseif (isset($import_xml->Классификатор->Свойства)) {
+                            $move_path = '/properties/';
+                        }
+                    }
+                    elseif (preg_match('/^offers(.*)\.xml$/', $_GET['filename'])) {
+                        $offers_xml = simplexml_load_file($upload_path . self::$upload1c .$_GET['filename']);
+                        if (isset($offers_xml->ПакетПредложений->Предложения)) {
+                            $move_path = '/goods/';
+                        }
+                        elseif (isset($offers_xml->Классификатор)) {
+                            $move_path = '/properties/';
+                        }
+                    }
+                    else {
+                        $move_path = '/goods/';
+                    }
+                    if (!is_dir($upload_path . $move_path)) {
+                        mkdir($upload_path . $move_path, 0777, true);
+                    }
+                    preg_match_all('/^(offers|import|prices|rests)(?:.*)(\.xml)$/', $_GET['filename'],$new_name_parts);
+                    $new_name = count($new_name_parts) ? $new_name_parts[1][0].$new_name_parts[2][0] : $_GET['filename'];
+                    rename($upload_path . self::$upload1c .$_GET['filename'],$upload_path.$move_path.$new_name);
                     $response = "success";
                 }
                 else {
                     $response = "failure";
                 }
+                break;
+            case 'complete':
+                $complete_file = fopen($upload_path.'completed.lock', 'w');
+                fputs($complete_file, time());
+                fclose($complete_file);
                 break;
             default:
                 $response = "failure";
@@ -275,7 +315,7 @@ class Ps_CommerceMLLoader extends Module
         return $varname."=".$sessid;
     }
 
-    private static function ‌‌parse_size($size) {
+    private static function parse_size($size) {
         $unit = preg_replace('/[^bkmgtpezy]/i', '', $size);
         $size = preg_replace('/[^0-9\.]/', '', $size);
         if ($unit) {
